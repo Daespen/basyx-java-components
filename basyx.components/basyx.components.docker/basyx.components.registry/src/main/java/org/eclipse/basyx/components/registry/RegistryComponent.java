@@ -24,10 +24,9 @@
  ******************************************************************************/
 package org.eclipse.basyx.components.registry;
 
+import java.util.Arrays;
 import java.util.HashMap;
-
 import javax.servlet.http.HttpServlet;
-
 import org.apache.commons.collections4.map.HashedMap;
 import org.eclipse.basyx.aas.registration.api.IAASRegistry;
 import org.eclipse.basyx.aas.registration.memory.InMemoryRegistry;
@@ -36,19 +35,28 @@ import org.eclipse.basyx.components.configuration.BaSyxContextConfiguration;
 import org.eclipse.basyx.components.configuration.BaSyxMongoDBConfiguration;
 import org.eclipse.basyx.components.configuration.BaSyxMqttConfiguration;
 import org.eclipse.basyx.components.configuration.BaSyxSQLConfiguration;
-import org.eclipse.basyx.components.registry.authorization.AuthorizedTaggedDirectoryFactory;
+import org.eclipse.basyx.components.configuration.BaSyxSecurityConfiguration;
+import org.eclipse.basyx.components.configuration.BaSyxSecurityConfiguration.AuthorizationStrategy;
+import org.eclipse.basyx.components.registry.authorization.GrantedAuthoritySecurityFeature;
+import org.eclipse.basyx.components.registry.authorization.SecurityFeature;
+import org.eclipse.basyx.components.registry.authorization.SimpleRbacSecurityFeature;
 import org.eclipse.basyx.components.registry.configuration.BaSyxRegistryConfiguration;
 import org.eclipse.basyx.components.registry.configuration.RegistryBackend;
+import org.eclipse.basyx.components.registry.configuration.RegistryEventBackend;
 import org.eclipse.basyx.components.registry.mongodb.MongoDBRegistry;
 import org.eclipse.basyx.components.registry.mongodb.MongoDBTaggedDirectory;
 import org.eclipse.basyx.components.registry.mqtt.MqttRegistryFactory;
 import org.eclipse.basyx.components.registry.mqtt.MqttTaggedDirectoryFactory;
+import org.eclipse.basyx.components.registry.mqtt.MqttV2RegistryFactory;
+import org.eclipse.basyx.components.registry.mqtt.MqttV2TaggedDirectoryFactory;
 import org.eclipse.basyx.components.registry.servlet.RegistryServlet;
 import org.eclipse.basyx.components.registry.servlet.TaggedDirectoryServlet;
 import org.eclipse.basyx.components.registry.sql.SQLRegistry;
+import org.eclipse.basyx.components.security.authorization.IJwtBearerTokenAuthenticationConfigurationProvider;
 import org.eclipse.basyx.extensions.aas.directory.tagged.api.IAASTaggedDirectory;
 import org.eclipse.basyx.extensions.aas.directory.tagged.map.MapTaggedDirectory;
-import org.eclipse.basyx.extensions.aas.registration.authorization.AuthorizedAASRegistry;
+import org.eclipse.basyx.extensions.shared.encoding.Base64URLEncoder;
+import org.eclipse.basyx.extensions.shared.encoding.URLEncoder;
 import org.eclipse.basyx.vab.protocol.http.server.BaSyxContext;
 import org.eclipse.basyx.vab.protocol.http.server.BaSyxHTTPServer;
 import org.slf4j.Logger;
@@ -60,7 +68,7 @@ import org.slf4j.LoggerFactory;
  * component can also start a registry without a backend and without
  * persistency.
  * 
- * @author espen
+ * @author espen, wege
  *
  */
 public class RegistryComponent implements IComponent {
@@ -77,6 +85,7 @@ public class RegistryComponent implements IComponent {
 	private BaSyxMongoDBConfiguration mongoDBConfig;
 	private BaSyxSQLConfiguration sqlConfig;
 	private BaSyxMqttConfiguration mqttConfig;
+	private BaSyxSecurityConfiguration securityConfig;
 
 	/**
 	 * Default constructor that loads default configurations
@@ -115,6 +124,22 @@ public class RegistryComponent implements IComponent {
 
 	/**
 	 * Constructor with given configuration for the registry and its server context.
+	 * This constructor will create a registry with a MongoDB backend.
+	 *
+	 * @param contextConfig
+	 *            The context configuration
+	 * @param registryConfig
+	 * @param mongoDBConfig
+	 *            The mongoDB configuration
+	 */
+	public RegistryComponent(BaSyxContextConfiguration contextConfig, BaSyxRegistryConfiguration registryConfig, BaSyxMongoDBConfiguration mongoDBConfig) {
+		this.contextConfig = contextConfig;
+		this.registryConfig = registryConfig;
+		this.mongoDBConfig = mongoDBConfig;
+	}
+
+	/**
+	 * Constructor with given configuration for the registry and its server context.
 	 * This constructor will create a registry with an SQL backend.
 	 * 
 	 * @param contextConfig
@@ -125,6 +150,22 @@ public class RegistryComponent implements IComponent {
 	public RegistryComponent(BaSyxContextConfiguration contextConfig, BaSyxSQLConfiguration sqlConfig) {
 		this.contextConfig = contextConfig;
 		this.registryConfig = new BaSyxRegistryConfiguration(RegistryBackend.SQL);
+		this.sqlConfig = sqlConfig;
+	}
+
+	/**
+	 * Constructor with given configuration for the registry and its server context.
+	 * This constructor will create a registry with an SQL backend.
+	 *
+	 * @param contextConfig
+	 *            The context configuration
+	 * @param registryConfig
+	 * @param sqlConfig
+	 *            The sql configuration
+	 */
+	public RegistryComponent(BaSyxContextConfiguration contextConfig, BaSyxRegistryConfiguration registryConfig, BaSyxSQLConfiguration sqlConfig) {
+		this.contextConfig = contextConfig;
+		this.registryConfig = registryConfig;
 		this.sqlConfig = sqlConfig;
 	}
 
@@ -147,8 +188,12 @@ public class RegistryComponent implements IComponent {
 	 */
 	@Override
 	public void startComponent() {
+		loadRegistryFeaturesFromConfig();
+
 		BaSyxContext context = contextConfig.createBaSyxContext();
 		context.addServletMapping("/*", createRegistryServlet());
+		configureContextForAuthorization(context);
+
 		server = new BaSyxHTTPServer(context);
 		server.start();
 		logger.info("Registry server started");
@@ -219,13 +264,26 @@ public class RegistryComponent implements IComponent {
 
 	private IAASTaggedDirectory decorateTaggedDirectory(IAASTaggedDirectory taggedDirectory) {
 		IAASTaggedDirectory decoratedTaggedDirectory = taggedDirectory;
-		if (this.mqttConfig != null) {
-			logger.info("Enable MQTT events for broker " + this.mqttConfig.getServer());
-			decoratedTaggedDirectory = new MqttTaggedDirectoryFactory().create(decoratedTaggedDirectory, this.mqttConfig);
+		if (isMQTTEnabled()) {
+			decoratedTaggedDirectory = configureMqttTagged(decoratedTaggedDirectory);
 		}
-		if (registryConfig.isAuthorizationEnabled()) {
-			logger.info("Authorization enabled for TaggedDirectory.");
-			decoratedTaggedDirectory = new AuthorizedTaggedDirectoryFactory().create(decoratedTaggedDirectory);
+		if (securityConfig.isAuthorizationEnabled()) {
+			decoratedTaggedDirectory = decorateWithAuthorization(decoratedTaggedDirectory);
+		}
+		return decoratedTaggedDirectory;
+	}
+
+	private IAASTaggedDirectory configureMqttTagged(IAASTaggedDirectory decoratedTaggedDirectory) {
+		logger.info("Enable MQTT events for broker " + this.mqttConfig.getServer());
+		if (registryConfig.getRegistryEvents().equals(RegistryEventBackend.MQTT)) {
+			decoratedTaggedDirectory = new MqttTaggedDirectoryFactory().create(decoratedTaggedDirectory, this.mqttConfig);
+			logger.info("MQTT event backend for " + this.registryConfig.getRegistryId());
+		} else if (registryConfig.getRegistryEvents().equals(RegistryEventBackend.MQTTV2)) {
+			decoratedTaggedDirectory = new MqttV2TaggedDirectoryFactory().create(decoratedTaggedDirectory, mqttConfig, this.registryConfig, new Base64URLEncoder());
+			logger.info("MQTTV2 event backend for " + this.registryConfig.getRegistryId());
+		} else if (registryConfig.getRegistryEvents().equals(RegistryEventBackend.MQTTV2_SIMPLE_ENCODING)) {
+			logger.info("MQTTV2_SIMPLE_ENCODING event backend for " + this.registryConfig.getRegistryId());
+			decoratedTaggedDirectory = new MqttV2TaggedDirectoryFactory().create(decoratedTaggedDirectory, this.mqttConfig, this.registryConfig, new URLEncoder());
 		}
 		return decoratedTaggedDirectory;
 	}
@@ -239,14 +297,14 @@ public class RegistryComponent implements IComponent {
 	private IAASRegistry createRegistryBackend() {
 		final RegistryBackend backendType = registryConfig.getRegistryBackend();
 		switch (backendType) {
-		case MONGODB:
-			return createMongoDBRegistryBackend();
-		case SQL:
-			return createSQLRegistryBackend();
-		case INMEMORY:
-			return createInMemoryRegistryBackend();
-		default:
-			throw new RuntimeException("Unknown backend type " + backendType);
+			case MONGODB:
+				return createMongoDBRegistryBackend();
+			case SQL:
+				return createSQLRegistryBackend();
+			case INMEMORY:
+				return createInMemoryRegistryBackend();
+			default:
+				throw new RuntimeException("Unknown backend type " + backendType);
 		}
 	}
 
@@ -269,19 +327,103 @@ public class RegistryComponent implements IComponent {
 
 	private IAASRegistry decorate(IAASRegistry aasRegistry) {
 		IAASRegistry decoratedRegistry = aasRegistry;
-		if (this.mqttConfig != null) {
-			logger.info("Enable MQTT events for broker " + this.mqttConfig.getServer());
-			decoratedRegistry = new MqttRegistryFactory().create(decoratedRegistry, this.mqttConfig);
+
+		if (isMQTTEnabled()) {
+			decoratedRegistry = configureMqtt(decoratedRegistry);
 		}
-		if (this.registryConfig.isAuthorizationEnabled()) {
-			logger.info("Enable Authorization for Registry");
-			decoratedRegistry = new AuthorizedAASRegistry(decoratedRegistry);
+
+		if (securityConfig.isAuthorizationEnabled()) {
+			decoratedRegistry = decorateWithAuthorization(decoratedRegistry);
+		}
+
+		return decoratedRegistry;
+	}
+
+	private SecurityFeature getSecurityFeature() {
+		final String strategyString = securityConfig.getAuthorizationStrategy();
+
+		if (strategyString == null) {
+			throw new IllegalArgumentException(String.format("no authorization strategy set, please set %s in aas.properties", BaSyxSecurityConfiguration.AUTHORIZATION_STRATEGY));
+		}
+
+		AuthorizationStrategy strategy;
+		try {
+			strategy = AuthorizationStrategy.valueOf(strategyString);
+		} catch (final IllegalArgumentException e) {
+			throw new IllegalArgumentException(String.format("unknown authorization strategy %s set in aas.properties, available options: %s", strategyString, Arrays
+					.toString(BaSyxSecurityConfiguration.AuthorizationStrategy.values())));
+		}
+
+		switch (strategy) {
+			case SimpleRbac: {
+				return new SimpleRbacSecurityFeature(securityConfig);
+			}
+			case GrantedAuthority: {
+				return new GrantedAuthoritySecurityFeature(securityConfig);
+			}
+			case Custom: {
+				return new SecurityFeature(securityConfig);
+			}
+			default:
+				throw new UnsupportedOperationException("no handler for authorization strategy " + strategyString);
+		}
+	}
+
+	private void configureContextForAuthorization(final BaSyxContext context) {
+		if (securityConfig.isAuthorizationEnabled()) {
+			final IJwtBearerTokenAuthenticationConfigurationProvider jwtBearerTokenAuthenticationConfigurationProvider = getJwtBearerTokenAuthenticationConfigurationProvider();
+			if (jwtBearerTokenAuthenticationConfigurationProvider != null) {
+				context.setJwtBearerTokenAuthenticationConfiguration(
+						jwtBearerTokenAuthenticationConfigurationProvider.get(securityConfig)
+				);
+			}
+		}
+	}
+
+	private IJwtBearerTokenAuthenticationConfigurationProvider getJwtBearerTokenAuthenticationConfigurationProvider() {
+		return securityConfig.loadInstanceDynamically(BaSyxSecurityConfiguration.AUTHORIZATION_STRATEGY_JWT_BEARER_TOKEN_AUTHENTICATION_CONFIGURATION_PROVIDER, IJwtBearerTokenAuthenticationConfigurationProvider.class);
+	}
+
+	private IAASRegistry decorateWithAuthorization(IAASRegistry registry) {
+		logger.info("Enable Authorization for Registry");
+		return getSecurityFeature().getDecorator().decorateRegistry(registry);
+	}
+
+	private IAASTaggedDirectory decorateWithAuthorization(IAASTaggedDirectory taggedDirectory) {
+		logger.info("Enable Authorization for TaggedDirectory");
+		return getSecurityFeature().getDecorator().decorateTaggedDirectory(taggedDirectory);
+	}
+
+	private IAASRegistry configureMqtt(IAASRegistry decoratedRegistry) {
+		logger.info("Enable MQTT events for broker " + this.mqttConfig.getServer());
+		if (registryConfig.getRegistryEvents().equals(RegistryEventBackend.MQTT)) {
+			decoratedRegistry = new MqttRegistryFactory().create(decoratedRegistry, this.mqttConfig);
+			logger.info("MQTT event backend for " + this.registryConfig.getRegistryId());
+		} else if (registryConfig.getRegistryEvents().equals(RegistryEventBackend.MQTTV2)) {
+			decoratedRegistry = new MqttV2RegistryFactory().create(decoratedRegistry, this.mqttConfig, this.registryConfig, new Base64URLEncoder());
+			logger.info("MQTTV2 event backend for " + this.registryConfig.getRegistryId());
+		} else if (registryConfig.getRegistryEvents().equals(RegistryEventBackend.MQTTV2_SIMPLE_ENCODING)) {
+			logger.info("MQTTV2_SIMPLE_ENCODING event backend for " + this.registryConfig.getRegistryId());
+			decoratedRegistry = new MqttV2RegistryFactory().create(decoratedRegistry, this.mqttConfig, this.registryConfig, new URLEncoder());
 		}
 		return decoratedRegistry;
 	}
 
+	private boolean isMQTTEnabled() {
+		return this.mqttConfig != null && !registryConfig.getRegistryEvents().equals(RegistryEventBackend.NONE);
+	}
+
 	private boolean isConfigurationSuitableForTaggedDirectory() {
 		return !(registryConfig.getRegistryBackend().equals(RegistryBackend.SQL));
+	}
+
+	private void loadRegistryFeaturesFromConfig() {
+		configureAuthorization();
+	}
+
+	private void configureAuthorization() {
+		securityConfig = new BaSyxSecurityConfiguration();
+		securityConfig.loadFromDefaultSource();
 	}
 
 	@Override

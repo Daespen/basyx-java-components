@@ -24,19 +24,21 @@
  ******************************************************************************/
 package org.eclipse.basyx.components.aas.aascomponent;
 
+import org.eclipse.basyx.vab.protocol.http.server.BaSyxContext;
+
 /**
  * 
  * Interface for AASServerFeatures
  * 
- * @author fischer, fried
+ * @author fischer, fried, wege
  *
  */
 public interface IAASServerFeature {
+	void initialize();
 
-	public void initialize();
+	void cleanUp();
 
-	public void cleanUp();
+	IAASServerDecorator getDecorator();
 
-	public IAASServerDecorator getDecorator();
-
+	void addToContext(BaSyxContext context);
 }

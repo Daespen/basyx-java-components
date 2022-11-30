@@ -33,7 +33,7 @@ import org.eclipse.basyx.components.configuration.BaSyxConfiguration;
  * Represents a BaSyx registry configuration for a BaSyx Registry with any
  * backend, that can be loaded from a properties file.
  * 
- * @author espen
+ * @author espen, wege
  *
  */
 public class BaSyxRegistryConfiguration extends BaSyxConfiguration {
@@ -47,13 +47,13 @@ public class BaSyxRegistryConfiguration extends BaSyxConfiguration {
 	// Default BaSyx Context configuration
 	public static final String DEFAULT_BACKEND = RegistryBackend.INMEMORY.toString();
 	public static final String DEFAULT_EVENTS = RegistryEventBackend.NONE.toString();
-	public static final String DEFAULT_AUTHORIZATION = FEATURE_DISABLED;
 	public static final String DEFAULT_TAGGED_DIRECTORY = FEATURE_DISABLED;
 
 	// Configuration keys
+	public static final String ID = "registry.id";
 	public static final String BACKEND = "registry.backend";
 	public static final String EVENTS = "registry.events";
-	public static final String AUTHORIZATION = "registry.authorization";
+
 	private static final String TAGGED_DIRECTORY = "registry.taggedDirectory";
 
 	// The default path for the context properties file
@@ -66,7 +66,6 @@ public class BaSyxRegistryConfiguration extends BaSyxConfiguration {
 		Map<String, String> defaultProps = new HashMap<>();
 		defaultProps.put(BACKEND, DEFAULT_BACKEND);
 		defaultProps.put(EVENTS, DEFAULT_EVENTS);
-		defaultProps.put(AUTHORIZATION, DEFAULT_AUTHORIZATION);
 		defaultProps.put(TAGGED_DIRECTORY, DEFAULT_TAGGED_DIRECTORY);
 		return defaultProps;
 	}
@@ -85,12 +84,21 @@ public class BaSyxRegistryConfiguration extends BaSyxConfiguration {
 	}
 
 	public void loadFromEnvironmentVariables() {
-		loadFromEnvironmentVariables(ENV_PREFIX, BACKEND, EVENTS, AUTHORIZATION, TAGGED_DIRECTORY);
+		String[] properties = {
+				BACKEND,
+				EVENTS,
+				TAGGED_DIRECTORY
+		};
+		loadFromEnvironmentVariables(ENV_PREFIX, properties);
 	}
 
 	public void loadFromDefaultSource() {
 		loadFileOrDefaultResource(DEFAULT_FILE_KEY, DEFAULT_CONFIG_PATH);
 		loadFromEnvironmentVariables();
+	}
+
+	public String getRegistryId() {
+		return getProperty(ID);
 	}
 
 	public RegistryBackend getRegistryBackend() {
@@ -107,18 +115,6 @@ public class BaSyxRegistryConfiguration extends BaSyxConfiguration {
 
 	public void setRegistryEvents(RegistryEventBackend events) {
 		setProperty(EVENTS, events.toString());
-	}
-
-	public boolean isAuthorizationEnabled() {
-		return getProperty(AUTHORIZATION).equals(FEATURE_ENABLED);
-	}
-
-	public void enableAuthorization() {
-		setProperty(AUTHORIZATION, FEATURE_ENABLED);
-	}
-
-	public void disableAuthorization() {
-		setProperty(AUTHORIZATION, FEATURE_DISABLED);
 	}
 
 	public boolean isTaggedDirectoryEnabled() {
