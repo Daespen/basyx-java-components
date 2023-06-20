@@ -339,20 +339,10 @@ public class MongoDBSubmodelAPI implements ISubmodelAPI {
 		return sm.getSubmodelElements().values();
 	}
 
-	@SuppressWarnings("unchecked")
 	private void updateSubmodelElementInDB(List<String> idShorts, Object newValue) {
 		Submodel sm = (Submodel) getSubmodel();
-		ISubmodelElement element = getNestedSubmodelElement(sm, idShorts);
-
-		IModelProvider mapProvider = new VABLambdaProvider((Map<String, Object>) element);
-		SubmodelElementProvider smeProvider = new SubmodelElementProvider(mapProvider);
-
-		smeProvider.setValue(Property.VALUE, newValue);
-		ISubmodelElement updatedElement = SubmodelElementFacadeFactory
-				.createSubmodelElement((Map<String, Object>) smeProvider.getValue(""));
-
-		sm.addSubmodelElement(updatedElement);
-
+		ISubmodelElement smElement = getNestedSubmodelElement(sm, idShorts);
+		getElementProvider(smElement).setValue(Property.VALUE, newValue);
 		writeSubmodelInDB(sm);
 	}
 
@@ -412,10 +402,14 @@ public class MongoDBSubmodelAPI implements ISubmodelAPI {
 		return parameter;
 	}
 
-	@SuppressWarnings("unchecked")
 	private static SubmodelElementProvider getElementProvider(Submodel sm, String idShort) {
 		ISubmodelElement elem = sm.getSubmodelElement(idShort);
-		IModelProvider mapProvider = new VABMapProvider((Map<String, Object>) elem);
+		return getElementProvider(elem);
+	}
+
+	@SuppressWarnings("unchecked")
+	private static SubmodelElementProvider getElementProvider(ISubmodelElement smElement) {
+		IModelProvider mapProvider = new VABMapProvider((Map<String, Object>) smElement);
 		return new SubmodelElementProvider(mapProvider);
 	}
 

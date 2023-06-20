@@ -37,8 +37,10 @@ import org.eclipse.basyx.components.aas.mongodb.MongoDBSubmodelAPI;
 import org.eclipse.basyx.components.configuration.BaSyxMongoDBConfiguration;
 import org.eclipse.basyx.submodel.metamodel.map.Submodel;
 import org.eclipse.basyx.submodel.metamodel.map.qualifier.LangStrings;
+import org.eclipse.basyx.submodel.metamodel.map.submodelelement.SubmodelElementCollection;
 import org.eclipse.basyx.submodel.metamodel.map.submodelelement.dataelement.File;
 import org.eclipse.basyx.submodel.metamodel.map.submodelelement.dataelement.MultiLanguageProperty;
+import org.eclipse.basyx.vab.modelprovider.VABPathTools;
 import org.junit.Test;
 
 import com.mongodb.MongoGridFSException;
@@ -69,6 +71,27 @@ public class TestMongoDBSubmodelAPI {
 
 		Object value = submodelAPI.getSubmodelElementValue(mlprop.getIdShort());
 
+		assertEquals(expected, value);
+	}
+
+	@Test
+	public void writeAndReadNestedMultiLanguageProperty() {
+		MongoDBSubmodelAPI submodelAPI = createAPIWithPreconfiguredSubmodel();
+
+		String collectionIdShort = "myCollection";
+		SubmodelElementCollection smeCollection = new SubmodelElementCollection(collectionIdShort);
+		submodelAPI.addSubmodelElement(smeCollection);
+
+		String mlpIdShort = "myMLP";
+		String idShortPath = VABPathTools.concatenatePaths(collectionIdShort, mlpIdShort);
+		MultiLanguageProperty mlpProp = new MultiLanguageProperty(mlpIdShort);
+		submodelAPI.addSubmodelElement(idShortPath, mlpProp);
+
+		LangStrings expected = new LangStrings("de", "Hallo!");
+		submodelAPI.updateSubmodelElement(idShortPath, expected);
+
+		Object value = submodelAPI.getSubmodelElementValue(idShortPath);
+		assertEquals(1, submodelAPI.getSubmodelElements().size());
 		assertEquals(expected, value);
 	}
 
